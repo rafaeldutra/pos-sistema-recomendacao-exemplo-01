@@ -1,7 +1,7 @@
 import 'https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@4.22.0/dist/tf.min.js';
 import { workerEvents } from '../events/constants.js';
 let _globalCtx = {};
-let _model = {}
+let _model = {};
 
 const WEIGHTS = {
     category: 0.4,
@@ -14,7 +14,7 @@ const WEIGHTS = {
 //Why? Keeps all features balanced so no one dominates training
 // Formula: (val - min) / (max - min)
 // Exeample: price=129.99, minPrice=39.99, maxPrice=199.99 -> 0.56
-const normalize = (value, min, max) => (value - min) / ((max - min) || 1) 
+const normalize = (value, min, max) => (value - min) / ((max - min) || 1);
 
 function makeContext(products, users) {
     const ages = users.map(u => u.age)
@@ -131,6 +131,19 @@ function encodeUser(user, context) {
             context.dimensions
         ])
     }
+
+    return tf.concat1d(
+        [
+            tf.zeros([1]), // preço é ignorado,
+            tf.tensor1d([
+                normalize(user.age, context.minAge, context.maxAge)
+                * WEIGHTS.age
+            ]),
+            tf.zeros([context.numCategories]), // categoria ignorada,
+            tf.zeros([context.numColors]), // color ignorada,
+
+        ]
+    ).reshape([1, context.dimentions])
 }
 
 function createTrainingData(context){
@@ -142,8 +155,10 @@ function createTrainingData(context){
             const productVector = encodeProduct(product, context).dataSync()
 
             const label = user.purchases.some(
-                purchase => purchase.name === product.name ? 1 : 0
-            )
+                    purchase => purchase.name === product.name ?
+                        1 :
+                        0
+                )
             //Combinar usuario e produto
             inputs.push([...userVector, ...productVector])
             labels.push(label)
@@ -158,8 +173,99 @@ function createTrainingData(context){
     }
 }
 
+// ====================================================================
+// 📌 Exemplo de como um usuário é ANTES da codificação
+// ====================================================================
+/*
+const exampleUser = {
+    id: 201,
+    name: 'Rafael Souza',
+    age: 27,
+    purchases: [
+        { id: 8, name: 'Boné Estiloso', category: 'acessórios', price: 39.99, color: 'preto' },
+        { id: 9, name: 'Mochila Executiva', category: 'acessórios', price: 159.99, color: 'cinza' }
+    ]
+};
+*/
+
+// ====================================================================
+// 📌 Após a codificação, o modelo NÃO vê nomes ou palavras.
+// Ele vê um VETOR NUMÉRICO (todos normalizados entre 0–1).
+// Exemplo: [preço_normalizado, idade_normalizada, cat_one_hot..., cor_one_hot...]
+//
+// Suponha categorias = ['acessórios', 'eletrônicos', 'vestuário']
+// Suponha cores      = ['preto', 'cinza', 'azul']
+//
+// Para Rafael (idade 27, categoria: acessórios, cores: preto/cinza),
+// o vetor poderia ficar assim:
+//
+// [
+//   0.45,            // peso do preço normalizado
+//   0.60,            // idade normalizada
+//   1, 0, 0,         // one-hot de categoria (acessórios = ativo)
+//   1, 0, 0          // one-hot de cores (preto e cinza ativos, azul inativo)
+// ]
+//
+// São esses números que vão para a rede neural.
+// ====================================================================
+
+
+
+// ====================================================================
+// 🧠 Configuração e treinamento da rede neural
+// ====================================================================
+
 function configureNeuralNetAndTrain(trainData){
 
+    const model = tf.sequential()
+    // Camada de entrada
+    // - inputShape: Número de features por exemplo de treino (trainData.inputDim)
+    //   Exemplo: Se o vetor produto + usuário = 20 números, então inputDim = 20
+    // - units: 128 neurônios (muitos "olhos" para detectar padrões)
+    // - activation: 'relu' (mantém apenas sinais positivos, ajuda a aprender padrões não-lineares)
+    model.add(
+        tf.layers.dense({
+            inputShape: [trainData.inputDimention],
+            units: 128,
+            activation: 'relu'
+        })
+    )
+    
+     // Camada oculta 1
+    // - 64 neurônios (menos que a primeira camada: começa a comprimir informação)
+    // - activation: 'relu' (ainda extraindo combinações relevantes de features)
+    model.add(
+        tf.layers.dense({
+            units: 64,
+            activation: 'relu'
+        })
+    )
+    
+    // Camada oculta 2
+    // - 32 neurônios (mais estreita de novo, destilando as informações mais importantes)
+    //   Exemplo: De muitos sinais, mantém apenas os padrões mais fortes
+    // - activation: 'relu'
+    model.add(
+        tf.layers.dense({
+            units: 32,
+            activation: 'relu'
+        })
+    )
+
+    // Camada de saída
+    // - 1 neurônio porque vamos retornar apenas uma pontuação de recomendação
+    // - activation: 'sigmoid' comprime o resultado para o intervalo 0–1
+    //   Exemplo: 0.9 = recomendação forte, 0.1 = recomendação fraca
+    model.add(
+        tf.layers.dense({ units: 1, activation: 'sigmoid'})
+    )
+
+    model.compile({
+        optimizer: tf.train.adam(0.01),
+        loss: 'binaryCrossentropy',
+        metrics: ['accuracy']
+    })
+    debugger
 }
 
 async function trainModel({ users }) {
@@ -179,8 +285,7 @@ async function trainModel({ users }) {
     _globalCtx = context
 
     const trainData = createTrainingData(context)
-    _model = configureNeuralNetAndTrain
-    debugger
+    _model = configureNeuralNetAndTrain(trainData)
 
     postMessage({
         type: workerEvents.trainingLog,
