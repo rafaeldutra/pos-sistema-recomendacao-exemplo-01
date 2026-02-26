@@ -149,25 +149,27 @@ function encodeUser(user, context) {
 function createTrainingData(context){
     const inputs = []
     const labels = []
-    context.users.forEach(user => {
-        const userVector = encodeUser(user, context).dataSync()
-        context.products.forEach(product => {
-            const productVector = encodeProduct(product, context).dataSync()
+    context.users
+        .filter( u => u.purchases.length)
+        .forEach(user => {
+            const userVector = encodeUser(user, context).dataSync()
+            context.products.forEach(product => {
+                const productVector = encodeProduct(product, context).dataSync()
 
-            const label = user.purchases.some(
-                    purchase => purchase.name === product.name ?
-                        1 :
-                        0
-                )
-            //Combinar usuario e produto
-            inputs.push([...userVector, ...productVector])
-            labels.push(label)
+                const label = user.purchases.some(
+                        purchase => purchase.name === product.name ?
+                            1 :
+                            0
+                    )
+                //Combinar usuario e produto
+                inputs.push([...userVector, ...productVector])
+                labels.push(label)
+            })
         })
-    })
     
     return {
         xs: tf.tensor2d(inputs),
-        ys: tf.tensor2d(labels, [labels.length]),
+        ys: tf.tensor2d(labels, [labels.length, 1]),
         inputDimention: context.dimensions * 2
         // tamanho = userVerctor + productVector
     }
@@ -215,7 +217,7 @@ const exampleUser = {
 // 🧠 Configuração e treinamento da rede neural
 // ====================================================================
 
-function configureNeuralNetAndTrain(trainData){
+async function configureNeuralNetAndTrain(trainData){
 
     const model = tf.sequential()
     // Camada de entrada
@@ -265,7 +267,22 @@ function configureNeuralNetAndTrain(trainData){
         loss: 'binaryCrossentropy',
         metrics: ['accuracy']
     })
-    debugger
+    
+    await model.fit(trainData.xs, trainData.ys, {
+        epochs: 100,
+        batchSize: 32,
+        shffle: true,
+        callbacks: {
+            onEpochEnd: (epoch, logs) => {
+                postMessage({
+                    type: workerEvents.trainingLog,
+                    epoch: epoch,
+                    loss: logs.loss,
+                    accuracy: logs.acc
+                });
+            }
+        }
+    })
 }
 
 async function trainModel({ users }) {
@@ -285,19 +302,11 @@ async function trainModel({ users }) {
     _globalCtx = context
 
     const trainData = createTrainingData(context)
-    _model = configureNeuralNetAndTrain(trainData)
-
-    postMessage({
-        type: workerEvents.trainingLog,
-        epoch: 1,
-        loss: 1,
-        accuracy: 1
-    });
-
-    setTimeout(() => {
+    _model = await configureNeuralNetAndTrain(trainData)
+    
     postMessage({ type: workerEvents.progressUpdate, progress: { progress: 100 } });
     postMessage({ type: workerEvents.trainingComplete })
-    }, 1000)
+   
 }
 function recommend({ user }) {
     console.log('will recommend for user:', user);
