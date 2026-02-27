@@ -1,0 +1,29 @@
+schema: spec-driven
+context: |
+  Project: Browser-based e-commerce recommendation system prototype.
+  Tech stack: JavaScript (ES Modules), BrowserSync, TensorFlow.js, tfjs-vis, Web Workers.
+  Architecture: MVC-like folders (view/controller/service) with event-driven communication via CustomEvent wrappers.
+  Data: Local JSON files in data/ and runtime persistence in sessionStorage.
+  Conventions:
+    - Use classes with static init(deps) where applicable.
+    - Keep business logic in services and DOM logic in views.
+    - Use async/await for fetch and storage workflows.
+    - Keep event names centralized in src/events/constants.js.
+    - Follow repository style: semicolons and single quotes.
+  Domain model:
+    - user: id, name, age, purchases
+    - product: catalog metadata used for rendering and recommendation input
+
+rules:
+  proposal:
+    - Keep proposals concise and implementation-focused.
+    - Always include Problem, Scope, Out of Scope, and Validation sections.
+    - Reference impacted modules by path (for example src/controller/ProductController.js).
+    - Prefer incremental changes that preserve current event contracts.
+  tasks:
+    - Break work into small, testable steps (about 1-2 hours each).
+    - Include explicit manual validation steps for browser behavior.
+    - Mention event flows to verify when behavior changes (userSelected, purchaseAdded, recommendationsReady, modelProgressUpdate).
+  spec:
+    - Use terminology consistent with current codebase (user, product, purchase, recommendation, training).
+    - Document expected input/output data shapes for new events or services.
