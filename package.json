@@ -6,7 +6,8 @@
     "type": "module",
     "scripts": {
         "start": "browser-sync -w . --server --files \"index.html,data/*.json,js/*.js\" --port 3000",
-        "test": "echo \"Error: no test specified\" && exit 1"
+        "test": "echo \"Error: no test specified\" && exit 1",
+        "import:csv": "node scripts/importCsvToPostgres.mjs"
     },
     "keywords": [
         "ecommerce",
@@ -18,5 +19,10 @@
     "license": "ISC",
     "devDependencies": {
         "browser-sync": "^3.0.4"
+    },
+    "dependencies": {
+        "csv-parse": "^6.1.0",
+        "dotenv": "^17.3.1",
+        "pg": "^8.19.0"
     }
 }

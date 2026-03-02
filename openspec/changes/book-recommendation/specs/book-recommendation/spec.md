@@ -44,3 +44,42 @@ The system MUST persist recommendation training run data in PostgreSQL.
 - **THEN** the system stores run metadata, metrics, and artifacts in database
 - **AND** the data is queryable for later analysis and reuse
 
+### Requirement: Enable pgvector in PostgreSQL
+The system MUST enable PostgreSQL `pgvector` extension before vector
+persistence or similarity queries are used.
+
+#### Scenario: Database initialization
+- **GIVEN** a fresh PostgreSQL database
+- **WHEN** schema initialization is executed
+- **THEN** `CREATE EXTENSION IF NOT EXISTS vector` is applied successfully
+- **AND** vector tables/columns can be created without type errors
+
+### Requirement: Persist Book and User Embeddings
+The system MUST persist fixed-dimension embeddings for books and users.
+
+#### Scenario: Embedding upsert
+- **GIVEN** generated embeddings for books and users with configured dimension N
+- **WHEN** embedding persistence runs
+- **THEN** embeddings are upserted in PostgreSQL `vector(N)` fields
+- **AND** model metadata and update timestamps are stored
+
+#### Scenario: Embedding dimension mismatch
+- **GIVEN** an embedding payload with dimension different from configured N
+- **WHEN** the payload is persisted
+- **THEN** the system rejects the payload with a clear validation error
+
+### Requirement: Retrieve Recommendations with Vector Similarity
+The system MUST support top-N recommendation retrieval using pgvector
+similarity operators.
+
+#### Scenario: User recommendation query
+- **GIVEN** a user embedding and persisted candidate book embeddings
+- **WHEN** top-N recommendations are requested
+- **THEN** the system returns ranked books ordered by configured vector distance
+- **AND** excludes books already rated by the user
+
+#### Scenario: No embedding available for user
+- **GIVEN** the user has no persisted embedding
+- **WHEN** recommendation retrieval is requested
+- **THEN** the system returns a controlled empty/fallback response
+- **AND** logs the reason for observability
