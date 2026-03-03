@@ -159,6 +159,7 @@ async function importRatings(client) {
   console.log(`[ratings] iniciando upsert em lotes (batch=${BATCH_SIZE})...`);
   let insertedOrUpdated = 0;
   let rejected = 0;
+  let rejectedByFk = 0;
   let processed = 0;
   let batch = new Map();
 
@@ -166,14 +167,26 @@ async function importRatings(client) {
     if (batch.size === 0) return;
     const batchRows = Array.from(batch.values());
     const text = `
+      with incoming (user_id, isbn, rating) as (
+        values ${buildValuePlaceholders(batchRows.length, 3)}
+      ),
+      valid as (
+        select i.user_id::bigint as user_id, i.isbn, i.rating::integer as rating
+        from incoming i
+        inner join users u on u.user_id = i.user_id::bigint
+        inner join books b on b.isbn = i.isbn
+      )
       insert into ratings (user_id, isbn, rating)
-      values ${buildValuePlaceholders(batchRows.length, 3)}
+      select user_id, isbn, rating
+      from valid
       on conflict (user_id, isbn) do update
       set rating = excluded.rating
     `;
     const values = batchRows.flat();
     const res = await client.query(text, values);
-    insertedOrUpdated += res.rowCount ?? batchRows.length;
+    const affected = res.rowCount ?? 0;
+    insertedOrUpdated += affected;
+    rejectedByFk += batchRows.length - affected;
     batch.clear();
   };
 
@@ -195,13 +208,16 @@ async function importRatings(client) {
 
     if (processed % PROGRESS_EVERY === 0 || processed === rows.length) {
       console.log(
-        `[ratings] progresso: ${processed}/${rows.length} | upsert: ${insertedOrUpdated} | rejeitadas: ${rejected}`
+        `[ratings] progresso: ${processed}/${rows.length} | upsert: ${insertedOrUpdated} | rejeitadas: ${rejected} | rejeitadas_fk: ${rejectedByFk}`
       );
     }
   }
 
   await flushBatch();
-  return { total: rows.length, insertedOrUpdated, rejected };
+  console.log(
+    `[ratings] final: total=${rows.length} | upsert=${insertedOrUpdated} | rejeitadas=${rejected} | rejeitadas_fk=${rejectedByFk}`
+  );
+  return { total: rows.length, insertedOrUpdated, rejected, rejectedByFk };
 }
 
 async function main() {
@@ -214,19 +230,33 @@ async function main() {
     // await client.query('commit');
     // console.log(`[users] commit ok. total: ${users}`);
 
-    await client.query('begin');
-    const books = await importBooks(client);
-    await client.query('commit');
-    console.log(`[books] commit ok. total: ${books}`);
+    // await client.query('begin');
+    // const books = await importBooks(client);
+    // await client.query('commit');
+    // console.log(`[books] commit ok. total: ${books}`);
 
     await client.query('begin');
     const ratings = await importRatings(client);
     await client.query('commit');
     console.log('[ratings] commit ok.');
 
+//fk rejeitadas no importa de rating
+/*[ratings] final: total=1149780 | upsert=1031139 | rejeitadas=0 | rejeitadas_fk=118641
+[ratings] commit ok.
+import_total: 10:49.255 (m:ss.mmm)
+Import concluido:
+{
+  ratings: {
+    total: 1149780,
+    insertedOrUpdated: 1031139,
+    rejected: 0,
+    rejectedByFk: 118641
+  }
+}*/
+
     console.timeEnd('import_total');
     console.log('Import concluido:');
-    console.log({ users, books, ratings });
+    console.log({ ratings });
   } catch (err) {
     await client.query('rollback');
     console.error('Erro no import:', err);
