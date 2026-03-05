@@ -12,6 +12,10 @@ const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || 1536);
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'deterministic-hash-v1';
 const BATCH_SIZE = Number(process.env.EMBEDDINGS_BATCH_SIZE || 200);
 const PROGRESS_EVERY = Number(process.env.EMBEDDINGS_PROGRESS_EVERY || 1000);
+const BOOK_EMBEDDING_LIMIT = Number(process.env.BOOK_EMBEDDING_LIMIT || 15000);
+const BOOK_MIN_RATINGS = Number(process.env.BOOK_MIN_RATINGS || 2);
+const PRUNE_OLD_BOOK_EMBEDDINGS =
+  (process.env.PRUNE_OLD_BOOK_EMBEDDINGS || 'true').toLowerCase() === 'true';
 
 function xmur3(str) {
   let h = 1779033703 ^ str.length;
@@ -97,12 +101,28 @@ function buildValuePlaceholders(rowCount, colCount) {
 }
 
 async function fetchBooks(client) {
-  const result = await client.query(`
-    select isbn, book_title, book_author, publisher
-    from books
-    where isbn is not null
-    order by isbn
-  `);
+  const result = await client.query(
+    `
+    with book_activity as (
+      select r.isbn, count(*)::int as rating_count
+      from ratings r
+      group by r.isbn
+    )
+    select
+      b.isbn,
+      b.book_title,
+      b.book_author,
+      b.publisher,
+      coalesce(ba.rating_count, 0)::int as rating_count
+    from books b
+    left join book_activity ba on ba.isbn = b.isbn
+    where b.isbn is not null
+      and coalesce(ba.rating_count, 0) >= $1
+    order by coalesce(ba.rating_count, 0) desc, b.isbn
+    limit $2
+  `,
+    [BOOK_MIN_RATINGS, BOOK_EMBEDDING_LIMIT]
+  );
   return result.rows;
 }
 
@@ -139,9 +159,9 @@ async function main() {
     console.time('book_embeddings_total');
 
     const books = await fetchBooks(client);
-    console.log(`[book_embeddings] livros encontrados: ${books.length}`);
+    console.log(`[book_embeddings] livros selecionados: ${books.length}`);
     console.log(
-      `[book_embeddings] modelo=${EMBEDDING_MODEL} dim=${EMBEDDING_DIM} batch=${BATCH_SIZE}`
+      `[book_embeddings] modelo=${EMBEDDING_MODEL} dim=${EMBEDDING_DIM} batch=${BATCH_SIZE} limit=${BOOK_EMBEDDING_LIMIT} min_ratings=${BOOK_MIN_RATINGS}`
     );
 
     let processed = 0;
@@ -170,6 +190,35 @@ async function main() {
     }
 
     upserted += await flushBatch(client, batch);
+
+    if (PRUNE_OLD_BOOK_EMBEDDINGS) {
+      const keepIsbns = books.map((b) => b.isbn);
+      let deleted = 0;
+      if (keepIsbns.length === 0) {
+        const delRes = await client.query(
+          `
+          delete from book_embeddings
+          where embedding_model = $1
+            and embedding_dim = $2
+          `,
+          [EMBEDDING_MODEL, EMBEDDING_DIM]
+        );
+        deleted = delRes.rowCount ?? 0;
+      } else {
+        const delRes = await client.query(
+          `
+          delete from book_embeddings
+          where embedding_model = $1
+            and embedding_dim = $2
+            and not (isbn = any($3::text[]))
+          `,
+          [EMBEDDING_MODEL, EMBEDDING_DIM, keepIsbns]
+        );
+        deleted = delRes.rowCount ?? 0;
+      }
+      console.log(`[book_embeddings] limpeza de embeddings antigos: ${deleted}`);
+    }
+
     await client.query('commit');
 
     console.timeEnd('book_embeddings_total');
