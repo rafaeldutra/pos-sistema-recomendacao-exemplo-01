@@ -12,27 +12,22 @@ const EMBEDDING_DIM = Number(process.env.EMBEDDING_DIM || 1536);
 const EMBEDDING_MODEL = process.env.EMBEDDING_MODEL || 'deterministic-hash-v1';
 const USER_EMBEDDING_LIMIT = Number(process.env.USER_EMBEDDING_LIMIT || 30000);
 const USER_MIN_RATED_BOOKS = Number(process.env.USER_MIN_RATED_BOOKS || 3);
+const USER_CHUNK_SIZE = Number(process.env.USER_EMBEDDING_CHUNK_SIZE || 2000);
+const USER_PROGRESS_EVERY = Number(process.env.USER_EMBEDDING_PROGRESS_EVERY || 5000);
 const PRUNE_OLD_USER_EMBEDDINGS =
   (process.env.PRUNE_OLD_USER_EMBEDDINGS || 'true').toLowerCase() === 'true';
 
-async function fetchSelectedUsers(client) {
+async function fetchCandidateUsersChunk(client, lastUserId, limit) {
   const res = await client.query(
     `
-    with user_activity as (
-      select r.user_id, count(*)::int as rated_books
-      from ratings r
-      join book_embeddings be on be.isbn = r.isbn
-      where be.embedding_model = $1
-        and be.embedding_dim = $2
-      group by r.user_id
-      having count(*) >= $3
-    )
-    select ua.user_id
-    from user_activity ua
-    order by ua.rated_books desc, ua.user_id
-    limit $4
+    select r.user_id
+    from ratings r
+    where r.user_id > $1
+    group by r.user_id
+    order by r.user_id
+    limit $2
     `,
-    [EMBEDDING_MODEL, EMBEDDING_DIM, USER_MIN_RATED_BOOKS, USER_EMBEDDING_LIMIT]
+    [lastUserId, limit]
   );
   return res.rows.map((r) => Number(r.user_id));
 }
@@ -42,19 +37,27 @@ async function main() {
   try {
     console.time('user_embeddings_total');
     console.log(
-      `[user_embeddings] iniciando agregacao por media dos livros avaliados | modelo=${EMBEDDING_MODEL} dim=${EMBEDDING_DIM} limit=${USER_EMBEDDING_LIMIT} min_rated_books=${USER_MIN_RATED_BOOKS}`
+      `[user_embeddings] iniciando agregacao por media dos livros avaliados | modelo=${EMBEDDING_MODEL} dim=${EMBEDDING_DIM} limit=${USER_EMBEDDING_LIMIT} min_rated_books=${USER_MIN_RATED_BOOKS} chunk=${USER_CHUNK_SIZE}`
     );
 
-    const selectedUsers = await fetchSelectedUsers(client);
-    console.log(`[user_embeddings] usuarios selecionados: ${selectedUsers.length}`);
-
     await client.query('begin');
+    await client.query(`set local statement_timeout = '0'`);
 
-    let res;
-    if (selectedUsers.length === 0) {
-      res = { rowCount: 0 };
-    } else {
-      res = await client.query(
+    let lastUserId = 0;
+    let scannedUsers = 0;
+    let upserted = 0;
+    const selectedUsers = [];
+
+    while (selectedUsers.length < USER_EMBEDDING_LIMIT) {
+      const remaining = USER_EMBEDDING_LIMIT - selectedUsers.length;
+      const chunkLimit = Math.min(USER_CHUNK_SIZE, remaining);
+      const candidateUsers = await fetchCandidateUsersChunk(client, lastUserId, chunkLimit);
+      if (candidateUsers.length === 0) break;
+
+      lastUserId = candidateUsers[candidateUsers.length - 1];
+      scannedUsers += candidateUsers.length;
+
+      const res = await client.query(
         `
         insert into user_embeddings (
           user_id,
@@ -75,14 +78,27 @@ async function main() {
           and be.embedding_dim = $2
           and r.user_id = any($3::bigint[])
         group by r.user_id
+        having count(*) >= $4
         on conflict (user_id) do update
         set embedding_model = excluded.embedding_model,
             embedding_dim = excluded.embedding_dim,
             embedding = excluded.embedding,
             updated_at = now()
+        returning user_id
         `,
-        [EMBEDDING_MODEL, EMBEDDING_DIM, selectedUsers]
+        [EMBEDDING_MODEL, EMBEDDING_DIM, candidateUsers, USER_MIN_RATED_BOOKS]
       );
+
+      upserted += res.rowCount ?? 0;
+      for (const row of res.rows) {
+        selectedUsers.push(Number(row.user_id));
+      }
+
+      if (selectedUsers.length % USER_PROGRESS_EVERY === 0 || selectedUsers.length >= USER_EMBEDDING_LIMIT) {
+        console.log(
+          `[user_embeddings] progresso: selecionados=${selectedUsers.length}/${USER_EMBEDDING_LIMIT} | varridos=${scannedUsers} | upsert=${upserted}`
+        );
+      }
     }
 
     if (PRUNE_OLD_USER_EMBEDDINGS) {
@@ -122,7 +138,9 @@ async function main() {
     console.timeEnd('user_embeddings_total');
     console.log('[user_embeddings] concluido');
     console.log({
-      upserted: res.rowCount ?? 0,
+      upserted,
+      selectedUsers: selectedUsers.length,
+      scannedUsers,
       totalForModelAndDim: countRes.rows[0]?.total ?? 0,
       embeddingModel: EMBEDDING_MODEL,
       embeddingDim: EMBEDDING_DIM
