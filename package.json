@@ -10,7 +10,8 @@
         "import:csv": "node scripts/importCsvToPostgres.mjs",
         "embed:books": "node scripts/upsertBookEmbeddings.mjs",
         "embed:users": "node scripts/upsertUserEmbeddings.mjs",
-        "embed:all": "node scripts/upsertBookEmbeddings.mjs && node scripts/upsertUserEmbeddings.mjs"
+        "embed:all": "node scripts/upsertBookEmbeddings.mjs && node scripts/upsertUserEmbeddings.mjs",
+        "recommend:topn": "node scripts/recommendTopN.mjs"
     },
     "keywords": [
         "ecommerce",
